@@ -86,7 +86,6 @@ def check_variable_names(text):
     It looks for 'input', 'output', 'reg', and 'wire' declarations and checks the variable names.
     """
     # Regular expression to match 'input wire', 'output wire', 'input', 'output', 'reg' declarations
-    # It now ensures that it correctly captures the entire variable name, even if it contains invalid characters.
     pattern = r'\b(input|output|reg|wire)\s+(\[\s*\d+\s*[:]\s*\d+\s*\]\s*)?([a-zA-Z_][a-zA-Z0-9_]*[^;\s,]*)\s*;'
 
     reserved_keywords = [
@@ -95,7 +94,7 @@ def check_variable_names(text):
     ]
     
     pattern2 = r'\bmodule\s+\w+\s*\(\s*([\w\s,]+)\s*\)'
-    matches2 = re.findall(pattern2,text)
+    matches2 = re.findall(pattern2, text)
     port_names = []
     for x in matches2:
         # Split the port list into individual ports
@@ -110,13 +109,15 @@ def check_variable_names(text):
     var_names = []
 
     for match in matches:
-        # match[2] is the variable name found
+        # match[0] is the variable type and match[2] is the variable name
+        var_type = match[0]
         variable_name = match[2]
-        var_names.append(variable_name)
+        var_names.append((var_type, variable_name))  # Store both type and name
 
     print(f'var names: {var_names}')    
-
-    for variable_name in var_names:
+    undeclared_vars = []
+    undeclared_vars1 = []
+    for var_type, variable_name in var_names:
         line_num = find_line_number(text, variable_name)
 
         # Check if the variable name is a reserved keyword
@@ -135,16 +136,34 @@ def check_variable_names(text):
             invalid_names.append(variable_name)
         
         # Check if the variable is a valid name
-        elif re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', variable_name):
+        elif re.match(r'^[a-zA-Z_][a-zA9-9_]*$', variable_name):
             continue  # This is a valid name, so we move to the next check
 
-    # Check if any invalid names were found
-    for x in port_names:
-        if x not in var_names:
-            print(f'Variable {x} declared in sensitivity list but not declared within the module.')
-            return False
-            break
+    # Check if any undeclared variables are in the sensitivity list but not declared in the module
+    for x in port_names:  # Port names are variables declared in the sensitivity list
+        if x not in [var[1] for var in var_names]:  # Variable names declared in the actual module
+            undeclared_vars.append(x)
 
+    # Check if any undeclared variables are in the module but not in the sensitivity list
+    for var_type, x in var_names:
+        # Skip 'wire' types for undeclared_vars1 check
+        if var_type == 'wire':
+            continue  # Move to the next variable if the type is 'wire'
+        if x not in port_names:
+            undeclared_vars1.append(x)
+
+    # If any undeclared variables are found, print them and return False
+    if undeclared_vars:
+        for var in undeclared_vars:
+            print(f'Variable {var} declared in sensitivity list but not declared within the module.')
+        return False    
+
+    if undeclared_vars1:
+        for var in undeclared_vars1:
+            print(f'Variable {var} declared in module but not declared within the sensitivity list.')
+        return False        
+
+    # If any invalid names are found, print them and return False
     if invalid_names:
         print(f"Invalid variable names: {', '.join(invalid_names)}")
         return False
@@ -592,11 +611,12 @@ def output_module_details():
 # """)
 
 make_file("""
-module MUX8to1(in, sel, out, clk, var);
+module MUX8to1(in, sel, out, clk);
     input clk;
     input [7:0] sel;
     input [2:0] out;
     output in;
+    output x;
     
     wire [5:0] MUX_output;
    
