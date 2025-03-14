@@ -3,6 +3,197 @@ import pyverilog
 from pyverilog.vparser.parser import parse
 from pyverilog import *
 
+import re
+def correct_code(text, errorlist):
+    corrected_code = text  # Start with the original code
+
+    # Debugging the error list
+    print(f"Initial code:\n{corrected_code}\n")
+    for error in errorlist:
+        print(f"Error in list: '{error}'")
+
+    # Process errors one by one based on the failed checks
+    for error in errorlist[1:]:  # Start from the second item since the first is "failed checks list:"
+        print(f"current error: {error.strip()}")
+        
+        if error.strip() == 'extract_module_names':
+            print("Fixing invalid module names...")
+            corrected_code = fix_invalid_module_names(corrected_code)
+
+        elif error.strip() == 'semicolon_placement':
+            print("Fixing semicolon placement errors...")
+            corrected_code = fix_missing_semicolons(corrected_code)
+
+        elif error.strip() == 'check_variable_names':
+            print("Fixing invalid variable names...")
+            corrected_code = fix_invalid_variable_names(corrected_code)
+
+        elif error.strip() == 'check_unclosed_brackets':
+            print("Fixing unclosed brackets...")
+            corrected_code = fix_unclosed_brackets(corrected_code)
+
+        elif error.strip() == 'check_always_sensitivity_list':
+            print(f"Handling 'check_always_sensitivity_list' error: {error.strip()}")
+            corrected_code = fix_empty_sensitivity_lists(corrected_code)
+
+    return corrected_code
+
+def fix_missing_semicolons(text):
+    # Example: add missing semicolons at the end of statements or declarations
+    lines = text.splitlines()
+    corrected_lines = []
+    
+    for line in lines:
+        # Preserve the indentation by not stripping leading whitespaces
+        stripped_line = line.strip()
+        
+        # If it's not a comment or empty, ensure it ends with a semicolon
+        if stripped_line and not stripped_line.startswith('//'):
+            # Ensure semicolon at the end of declarations/assignments
+            if not stripped_line.endswith(";") and not stripped_line.startswith(('begin', 'end', 'always', 'if', 'else')):
+                corrected_lines.append(line.rstrip() + ";")  # Append semicolon but preserve indentation and trailing spaces
+            else:
+                corrected_lines.append(line)  # Leave the line as it is
+        else:
+            corrected_lines.append(line)  # Leave comments or empty lines as they are
+
+    # Join the lines back with new line characters, preserving the original structure
+    return "\n".join(corrected_lines)
+
+def fix_invalid_variable_names(text):
+    """
+    Function to fix invalid variable names, including reserved keywords, 
+    and missing variable names in Verilog code.
+    - Prepend 'valid_' to invalid variable names.
+    - Handle missing variable names or incorrect names.
+    """
+    lines = text.splitlines()
+    corrected_lines = []
+
+    # Pattern to match 'input', 'output', 'reg', 'wire' declarations
+    module_var_pattern = r'\b(input|output)\s+(wire|reg\s+)?(\[\s*\d+\s*[:]\s*\d+\s*\]\s*)?([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*\s*)*)\s*;'
+    
+    # Pattern to match the module sensitivity list
+    sens_list_pattern = r'module\s+[^\s(]+?\s*\((.*?)\)\s*;'
+    
+    modvarslist = []  # List to store module variables
+    sensvarslist = []  # List to store sensitivity list variables
+
+    # Extract module variables (input, output, reg, wire)
+    modvars = re.findall(module_var_pattern, text)
+    print(f"modvars: {modvarslist}")
+    for var in modvars:
+        var_type = var[0].strip()  # input, output, reg, wire
+        var_name = var[-1].split(',')  # Variable name
+        if var_type != 'wire':  # Only add non-wire variables
+            modvarslist.append(var_name)    
+    print(f"modvars 2: {modvarslist}")
+    
+    # Flatten modvarslist and clean up any extra spaces
+    flattened_modvarslist = [var.strip() for sublist in modvarslist for var in sublist]
+
+    print(f"Flattened modvarslist: {flattened_modvarslist}")
+
+    # Extract sensitivity list variables
+    sensvars = re.findall(sens_list_pattern, text)
+    if sensvars:
+        sensvarslist = sensvars[0].split(',')  # The first group contains the port list
+        sensvarslist = [var.strip() for var in sensvarslist]  # Strip any extra spaces
+
+    # Check for missing variables in the module declaration
+    missing_module_vars = [var for var in sensvarslist if var not in flattened_modvarslist]
+    missing_sens_vars = [var for var in flattened_modvarslist if var not in sensvarslist]
+    
+    # If any variables are missing from the module declaration, suggest adding them
+    if missing_module_vars:
+        # Suggest correction by adding missing variables to the module port list
+        corrected_lines.append(f"""Suggested correction: The following variable(s) were declared in the module port sensitivity list, but not within the module itself: {', '.join(list(set(sensvarslist).symmetric_difference(set(flattened_modvarslist))))}. Please declare as input, output or reg.""")
+        
+    elif missing_sens_vars: 
+        print(f"Missing variables in sens declaration: {', '.join(missing_sens_vars)}")
+        # Suggest correction by adding missing variables to the module port list
+        corrected_lines.append(f"Suggested correction: Module port sensitivity list should look like this: {', '.join(flattened_modvarslist)}")
+    
+    # Continue processing the text for any other corrections (like invalid variable names)
+    for line in lines:
+        corrected_lines.append(line)
+        
+    return "\n".join(corrected_lines)
+
+
+def fix_unclosed_brackets(text):
+    # Check for unclosed brackets and attempt to auto-correct (add matching closing brackets)
+    stack = []
+    corrected_code = text
+    for i, char in enumerate(text):
+        if char in "([{":
+            stack.append((char, i))  # Push the opening bracket with its index
+        elif char in ")]}":
+            if stack and ((char == ')' and stack[-1][0] == '(') or
+                          (char == ']' and stack[-1][0] == '[') or
+                          (char == '}' and stack[-1][0] == '{')):
+                stack.pop()  # Pop the matching bracket
+            else:
+                # Insert the correct closing bracket for unmatched closing brackets
+                corrected_code = corrected_code[:i] + get_matching_bracket(stack[-1][0]) + corrected_code[i:]
+                stack.pop()  # Remove last unmatched opening bracket
+                break  # Fix one mismatch at a time
+    
+    # If there are still unclosed opening brackets, we append closing ones
+    if stack:
+        for char, index in stack:
+            corrected_code += get_matching_bracket(char)
+    
+    return corrected_code
+
+def get_matching_bracket(open_bracket):
+    """ Helper function to return the matching closing bracket """
+    matching_brackets = {'(': ')', '[': ']', '{': '}'}
+    return matching_brackets.get(open_bracket, '')
+
+import re
+
+def fix_empty_sensitivity_lists(text):
+    # Pattern to match the module declaration (input/output variables)
+    module_pattern = r'\b(input|output|reg)\s+(wire|reg)?\s*(\[\s*\d*\s*[:]\s*\d*\s*\]*\s*)?([a-zA-Z_][a-zA-Z0-9_]*)'
+    always_pattern = r'\balways@\(\s*\)\s*'
+
+    corrected_code = text
+    # Find all module port declarations (inputs, outputs)
+    module_ports = re.findall(module_pattern, text)
+    module_vars = []
+    print(module_ports)
+    for x in module_ports:
+        module_vars.append(x[-1])
+    print(module_vars)
+   
+    # Find all always blocks with empty sensitivity lists
+    matches = re.findall(always_pattern, text)
+    print(matches)
+    for match in matches:
+        # Construct the new sensitivity list based on input/output variables
+        suggestion = (f"Suggested Correction: replace your empty always sensitivity list with an already declared variable, such as {module_vars[-1]}.\nNote: If using a clock variable, an always block can trigger on its positive or negative edge using posedge/negedge (clock variable name).\n")
+        z = corrected_code.replace(f"always@()", f"always @({module_vars[-1]})")
+        suggestion += (z)
+    
+    return suggestion
+
+
+def fix_invalid_module_names(text):
+    # Ensure module names don't start with digits or contain invalid characters
+    corrected_code = text
+    module_pattern = r'\bmodule\s+([^\s\(\)]+)\s*(?=\()'
+    module_names = re.findall(module_pattern, text)
+    
+    for name in module_names:
+        print(name)
+        if name[0].isdigit() or re.search(r'[^a-zA-Z0-9_]', name):
+            # Change the module name to a valid one
+            corrected_name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+            corrected_name = corrected_name.lstrip('0123456789')  # Ensure it doesn't start with a number
+            corrected_code = corrected_code.replace(name, corrected_name)
+    return (f"Suggested Correction: Replace module name {name} with {corrected_name}. \n {corrected_code}")
+
 def semicolon_placement(text):
     """
     Function to check if the placement of semicolons in Verilog code is valid.
@@ -59,14 +250,16 @@ def semicolon_placement(text):
         elif re.search(r'\b(assign|=)\b', line) and not line.endswith(";"):
             errors.append(f"Error: Missing semicolon at the end of assignment statement on line {line_num}: {line}")
         
-    # If no errors, print a success message
-    if not errors:
-        print("All semicolons are correctly placed.")
-        return True
-    else:
+    # Return all lines that don't end with a semicolon
+    if errors:
         for error in errors:
             print(error)
-        return False
+        return False  # Return all the errors
+    
+    else:
+        print("All semicolons are correctly placed.")
+        return True
+
 
 def check_unclosed_brackets(text):
     stack = []
@@ -86,15 +279,15 @@ def check_variable_names(text):
     It looks for 'input', 'output', 'reg', and 'wire' declarations and checks the variable names.
     """
     # Regular expression to match 'input wire', 'output wire', 'input', 'output', 'reg' declarations
-    pattern = r'\b(input|output|reg|wire)\s+(\[\s*\d+\s*[:]\s*\d+\s*\]\s*)?([a-zA-Z_][a-zA-Z0-9_]*[^;\s,]*)\s*;'
+    pattern = r'\b(input|output)\s+(wire|reg)?\s*(\[\s*\d+\s*[:]\s*\d+\s*\]\s*)?([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*\s*)*)\s*'
 
     reserved_keywords = [
         "module", "always", "initial", "assign", "if", "else", "for", "while", 
         "case", "end", "parameter", "input", "output", "reg", "wire"
     ]
     
-    pattern2 = r'\bmodule\s+\w+\s*\(\s*([\w\s,]+)\s*\)'
-    matches2 = re.findall(pattern2, text)
+    pattern2 = r'module\s+[^\s(]+?\s*\((.*?)\)\s*;'
+    matches2 = re.findall(pattern2, text, flags = re.DOTALL)
     port_names = []
     for x in matches2:
         # Split the port list into individual ports
@@ -111,12 +304,15 @@ def check_variable_names(text):
     for match in matches:
         # match[0] is the variable type and match[2] is the variable name
         var_type = match[0]
-        variable_name = match[2]
-        var_names.append((var_type, variable_name))  # Store both type and name
+        variable_names = match[-1].split(',')  # Split multiple variables by commas
+        variable_names = [var.strip() for var in variable_names]  # Strip extra spaces
+        for variable_name in variable_names:
+            print(variable_name)
+            var_names.append((var_type, variable_name))  # Store both type and name
 
     print(f'var names: {var_names}')    
-    undeclared_vars = []
-    undeclared_vars1 = []
+    undeclared_module_vars = [] # List for variables in sens list but not inside module
+    undeclared_sens_vars = [] # List for variables in module but not inside sens list
     for var_type, variable_name in var_names:
         line_num = find_line_number(text, variable_name)
 
@@ -142,7 +338,7 @@ def check_variable_names(text):
     # Check if any undeclared variables are in the sensitivity list but not declared in the module
     for x in port_names:  # Port names are variables declared in the sensitivity list
         if x not in [var[1] for var in var_names]:  # Variable names declared in the actual module
-            undeclared_vars.append(x)
+            undeclared_module_vars.append(x)
 
     # Check if any undeclared variables are in the module but not in the sensitivity list
     for var_type, x in var_names:
@@ -150,16 +346,19 @@ def check_variable_names(text):
         if var_type == 'wire':
             continue  # Move to the next variable if the type is 'wire'
         if x not in port_names:
-            undeclared_vars1.append(x)
+            undeclared_sens_vars.append(x)
 
     # If any undeclared variables are found, print them and return False
-    if undeclared_vars:
-        for var in undeclared_vars:
-            print(f'Variable {var} declared in sensitivity list but not declared within the module.')
-        return False    
+    if undeclared_module_vars:
+        for var in undeclared_module_vars:
+            if any(reserved_keyword in var for reserved_keyword in reserved_keywords):
+                break
+            else:
+                print(f'Variable {var} declared in sensitivity list but not declared within the module.')
+                return False    
 
-    if undeclared_vars1:
-        for var in undeclared_vars1:
+    if undeclared_sens_vars:
+        for var in undeclared_sens_vars:
             print(f'Variable {var} declared in module but not declared within the sensitivity list.')
         return False        
 
@@ -180,19 +379,18 @@ def find_line_number(text, target):
             return index  # Return the line number
     return None  # Return None if the target isn't found
 
-def check_always_sensivity_list(text):
+def check_always_sensitivity_list(text):
     """
     Function to check the always blocks for sensitivity lists containing ports.
     This function works before the AST is generated.
     """
-    always_pattern = r'always\s+(@\((.*?)\))'  # Matches always block with sensitivity list
-    always_blocks = re.findall(always_pattern, text)
-    for always in always_blocks:
-        sens_list = always[1].strip()  # Extract the content inside the sensitivity list
-        if not sens_list:
-            x = find_line_number(text, "always")
-            print(f"Warning: Empty sensitivity list in 'always' block at line {x}.")
-            return False
+    always_pattern = r'\balways@\(\s*\)\s*'  # Matches always block with sensitivity list
+    always_blocks = re.finditer(always_pattern, text)
+    print(always_blocks)
+    if always_blocks:
+        x = find_line_number(text, "always")
+        print(f"Warning: Empty sensitivity list in 'always' block at line {x}.")
+        return False
     else:
         return True
   
@@ -226,27 +424,38 @@ def extract_module_names(text):
 def make_file(text):
     filename = "makeFile.v"
     print(f"Running checks for input: \n{text}")
-    functions = [extract_module_names, check_variable_names, semicolon_placement, check_unclosed_brackets, check_always_sensivity_list]  # list of our checks
+    functions = [extract_module_names, check_variable_names, semicolon_placement, check_unclosed_brackets, check_always_sensitivity_list]  # list of our checks
     passed = True  # Track if all checks pass
     passedlist = ["Passed checks list: "]
     failedlist = ["Failed checks list: "]
     for func in functions:  # iterate through each function
         result = func(text)  # get result for each function
-
+        print(f"Running check: {func.__name__}")
         if result == False:  # if any function result is false, output which check failed
             failedlist.append(func.__name__)  # add to failed list
-            print(f"Check failed: {func.__name__}")
+            print(f"Check failed.")
             passed = False  # Set passed to False and stop further checks
             
         elif result == True:  # if result is True, output which check passed
             passedlist.append(func.__name__)  # add to passed list
-            print(f"Check passed: {func.__name__}")
-    print(passedlist)
-    print(failedlist)
+            print(f"Check passed.")
+    
     if passed:  # Proceed to file creation only if all checks passed
+        joined_passed_list = ' '.join(passedlist[1:])
+        print(f"All checks passed: {joined_passed_list}")
         with open(filename, "w+") as file:
             file.write(text)  # Write the Verilog code to the file
         parse_file(filename)
+
+    elif not passed:
+        joined_failed_list = ' '.join(failedlist)
+        print(joined_failed_list)
+        if passedlist[1:]:
+            joined_passed_list = ' '.join(passedlist)
+            print(joined_passed_list)
+        corrected_code = correct_code(text, failedlist)
+        print("Corrected Code:")
+        print(corrected_code)
 
 # Function to parse the Verilog file and handle AST
 def parse_file(filename):
@@ -340,11 +549,10 @@ def find_ports(item):
 def find_instances(item, module_info):
     module_info['instances'] = []
     for instance in item.items:
-        
-        #print(instance)
         # Handling Assign statements (Blocking and Non-blocking)
         if isinstance(instance, pyverilog.vparser.ast.Assign):  # Check for assignment statements
-            if instance.right.var.cond: ## this will account for conditional statements. ex: assign out = sel ? in[1] : in[0];
+            
+            if hasattr(instance.right.var, 'cond'): ## this will account for conditional statements. ex: assign out = sel ? in[1] : in[0];
                 lhs = instance.left.var
                 true_val = str(instance.right.var.true_value.var) + str(f'[{instance.right.var.true_value.ptr}]' if instance.right.var.false_value.ptr else None)
                 false_val = str(instance.right.var.false_value.var) + str(f'[{instance.right.var.false_value.ptr}]' if instance.right.var.false_value.ptr else None)
@@ -500,7 +708,7 @@ def find_instances(item, module_info):
 
         # Handling other declarations such as Input, Output, etc.
         elif isinstance(instance, pyverilog.vparser.ast.Decl):
-            print(instance)
+            print(instance.list)
             for p in instance.list:
                 if isinstance(p, pyverilog.vparser.ast.Input):
                     port_name = f'{int(str(p.width.msb)) - int(str(p.width.lsb)) + 1}-bit Input ' + p.name if p.width else "Input " + p.name # adds bit width for variable if it exists.
@@ -510,6 +718,7 @@ def find_instances(item, module_info):
                     port_name = "Output " + p.name
                     module_info['ports'].append(port_name)
                 elif isinstance(p, pyverilog.vparser.ast.Wire):
+                    print(dir(p))
                     wire_name = f'{int(str(p.width.msb)) - int(str(p.width.lsb)) + 1}-bit Wire ' + p.name if p.width else "Wire " + p.name
                     module_info['ports'].append(wire_name)
                 elif isinstance(p, pyverilog.vparser.ast.Reg):
@@ -612,14 +821,16 @@ def output_module_details():
 
 make_file("""
 module MUX8to1(in, sel, out, clk);
-    input clk;
     input [7:0] sel;
-    input [2:0] out;
-    output in;
-    output x;
+    output [2:0] out;
+    output reg in;
+    input wire clk;      
+
     
     wire [5:0] MUX_output;
-   
+    always@() begin
+    end
+          
     MUX2to1 M0(in[1:0], sel[0], MUX_output[0]);
     MUX2to1 M1(in[3:2], sel[0], MUX_output[1]);
     MUX2to1 M2(in[5:4], sel[0], MUX_output[2]);
@@ -633,13 +844,29 @@ endmodule
 
 
 """)
+
+make_file("""module $D_FF(CLK, D, RST, Q, Q_NOT);
+    input [3:0] CLK, D, RST;
+    output reg Q, Q_NOT
+    
+    always@() begin
+        if(RST) begin
+            Q <= 1'b0
+            Q_NOT <= 1'b1;
+            end
+        else begin
+            Q <= D;
+            Q_NOT <= !D;
+            end
+            end
+endmodule""")
 # make_file("""module counter(
 #     input clk,
 #     input reset,
 #     output reg [3:0] count
 # );
 #     assign clk = count;
-#     always @(posedge clk or posedge reset) begin
+#     always @(clk) begin
 #         if (reset)
 #             count <= 4'b0000;
 #         else
@@ -647,5 +874,18 @@ endmodule
 #     end
 # endmodule""")
 
-
+# make_file("""module d_flip_flop (  
+# input wire d,   
+# input wire clk, 
+# input wire reset, 
+# output wire q);  
+# always @() begin  
+#  if (reset) begin // When 'reset' is active (1), asynchronously reset the flop.  
+#   q <= 1'b0;  
+#  end  
+#  else begin // On the rising edge of the clock, store the value of 'd'. 
+#   q <= d;  
+#  end  
+# end  
+# endmodule""")
 #make_file("module test(a, b, c, d); input a; output a, b;  assign a = b; endmodule")  
